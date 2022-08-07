@@ -1,0 +1,974 @@
+' Added libraries
+' Microsoft Scripting Runtime
+
+' =============================================================================================
+' Module Name: masterUpdate
+' Version Control
+' Issue             Date                Comments
+' 1                 08/04/2020          First Issue
+' 2                 13/04/2020          Added mitigation case for no additions/removals
+' 3                 13/04/2020          Added Source System column to RoleMapUpdates sheet
+'                                           --- Update to ADD_ROLE and REMOVE_ROLE to accomodate Source System
+'                                       Added 3 buttons to Columns sheet
+' 4                 16/04/2020          Added CHECK_DUPLICATE function to ensure no duplicates are added
+' 5                 20/04/2020          Added CLEAR_ENTRIES function to prevent the re-writing of entry data
+' 6                 01/06/2020          Fixed FIND_RECORD to ensure no array exceedance for last record
+'                                           --- Inserted if statement to cover end of array
+' 7                 18/11/2020          Edited GET_UPDATES to include replace dictionaries
+'                                       Updated global worksheet constants to include replace
+'                                       Added REPLACE_OWNER
+'                                       Added REPLACE_ROLE
+'                                       Updated REMOVE_OWNER to include optional "all" parameter
+'                                       Updated REMOVE_ROLE to include optional "all" parameter
+                            
+
+Option Explicit
+
+' worksheets
+Const wsMaster As String = "Master"
+Const wsOutput As String = "Output"
+Const wsMapUpdates As String = "RoleMapUpdates"
+Const wsOwnerUpdates As String = "RoleOwnerUpdates"
+Const wsColumns As String = "Columns"
+' columns
+Const colSearch As Integer = 1              ' Column A - master search column
+Const colApprover As Integer = 16           ' Column P - approver
+Const colAlternApprover As Integer = 17     ' Column Q - alternative approver
+Const colAssignApprover As Integer = 18     ' Column R - placeholder "Y"
+Const colContentApprover As Integer = 19    ' Column S - placeholder "Y"
+Const colSourceSystem As Integer = 35       ' Column AI - source system
+Const colTargetSystem As Integer = 36       ' Column AJ - target systemm
+Const colRoleName As Integer = 37           ' Column AK - specific role
+Const colLast As Integer = 38               ' column AL - last column of data
+' delimiters
+Const delimRecord As String = "|"
+Const delimParam As String = "~"
+' operations
+Const add As String = "add"
+Const remove As String = "remove"
+Const replace As String = "replace"
+
+
+Sub MASTER()
+
+' workbook parameters
+Dim oWSMaster As Excel.Worksheet
+Dim oWSOutput As Excel.Worksheet
+Dim oWSMapUpdates As Excel.Worksheet
+Dim oWSOwnerUpdates As Excel.Worksheet
+' collections/dictionaries
+Dim collMap As Collection
+Dim collOwner As Collection
+Dim dictRoleAdd As Scripting.Dictionary
+Dim dictRoleRemove As Scripting.Dictionary
+Dim dictRoleReplace As Scripting.Dictionary
+Dim dictOwnerAdd As Scripting.Dictionary
+Dim dictOwnerRemove As Scripting.Dictionary
+Dim dictOwnerReplace As Scripting.Dictionary
+Dim dictTemp As Scripting.Dictionary
+' integers
+Dim numCurRecords As Integer
+Dim numNewRecords As Integer
+' strings
+Dim roleMain As String
+' temporary arrays
+Dim tmpArr As Variant
+Dim searchArr As Variant
+Dim records As Variant
+' counting parameters
+Dim lRow As Long
+Dim lend As Long
+Dim i As Long
+Dim j As Long
+Dim k
+Dim nextRec As Long
+
+
+' set workbook worksheets
+Set oWSMaster = ThisWorkbook.sheets(wsMaster)
+Set oWSOutput = ThisWorkbook.sheets(wsOutput)
+Set oWSMapUpdates = ThisWorkbook.sheets(wsMapUpdates)
+Set oWSOwnerUpdates = ThisWorkbook.sheets(wsOwnerUpdates)
+
+
+' see if there are any updates to be completed
+With oWSMapUpdates
+    lRow = .Cells(Rows.count, "A").End(-4162).Row
+    If lRow > 1 Then
+        ' last occupied row greater than 1, so there are updates to be completed
+        Set collMap = GET_UPDATES(oWSMapUpdates, lRow)
+    Else
+        ' no new additions so add blank dictionaries
+        Set collMap = New Collection
+        Set dictTemp = New Scripting.Dictionary
+        collMap.add dictTemp
+        collMap.add dictTemp
+        collMap.add dictTemp
+    End If
+End With
+
+
+' see if there are any updates to be completed
+With oWSOwnerUpdates
+    lRow = .Cells(Rows.count, "A").End(-4162).Row
+    If lRow > 1 Then
+        ' last occupied row greater than 1, so there are updates to be completed
+        Set collOwner = GET_UPDATES(oWSOwnerUpdates, lRow)
+    Else
+        ' no new additions so add blank dictionaries
+        Set collOwner = New Collection
+        Set dictTemp = New Scripting.Dictionary
+        collOwner.add dictTemp
+        collOwner.add dictTemp
+        collOwner.add dictTemp
+    End If
+End With
+
+
+' specify dictionaries
+Set dictRoleAdd = collMap(1)
+Set dictRoleRemove = collMap(2)
+Set dictRoleReplace = collMap(3)
+Set dictOwnerAdd = collOwner(1)
+Set dictOwnerRemove = collOwner(2)
+Set dictOwnerReplace = collOwner(3)
+
+' now records to be updated have been collected, get current status of roleMain
+With oWSMaster
+    ' find last occupied row and loop through records to find which need updating
+    lRow = .Cells(Rows.count, "A").End(-4162).Row
+    searchArr = .Range(.Cells(2, 1), .Cells(lRow, 1))
+End With
+
+
+' first clear all output before inserting new data
+With oWSOutput
+    lRow = FIND_LAST_ROW(oWSOutput)
+    If lRow > 1 Then Range(.Cells(2, "A"), .Cells(lRow, colLast)).ClearContents
+End With
+
+' first loop through all records to be replaced
+' then go through all records to be added
+' then go through all records to be removed
+' step 1
+For Each k In dictRoleReplace
+    roleMain = k
+    records = Split(dictRoleReplace(k), delimRecord)
+    ' get current structure of main role
+    tmpArr = FIND_RECORD(roleMain)
+    ' add new records
+    tmpArr = REPLACE_ROLE(tmpArr, records)
+    ' check if this role exists in role updates
+    If dictOwnerReplace.Exists(k) Then
+        records = Split(dictOwnerReplace(k), delimRecord)
+        tmpArr = REPLACE_OWNER(tmpArr, records)
+        dictOwnerReplace.remove k
+    End If
+    ' check if this role exists in role updates
+    If dictRoleAdd.Exists(k) Then
+        records = Split(dictRoleAdd(k), delimRecord)
+        tmpArr = ADD_ROLES(tmpArr, records)
+        dictRoleAdd.remove k
+    End If
+    ' check if this role exists in owner updates
+    If dictOwnerAdd.Exists(k) Then
+        records = Split(dictOwnerAdd(k), delimRecord)
+        tmpArr = ADD_OWNER(tmpArr, records)
+        dictOwnerAdd.remove k
+    End If
+    ' check if this role exists in remove roles
+    If dictRoleRemove.Exists(k) Then
+        records = Split(dictRoleRemove(k), delimRecord)
+        tmpArr = REMOVE_ROLE(tmpArr, records)
+        dictRoleRemove.remove k
+    End If
+    ' check if this role exists in remove owners
+    If dictOwnerRemove.Exists(k) Then
+        records = Split(dictOwnerRemove(k), delimRecord)
+        tmpArr = REMOVE_OWNER(tmpArr, records)
+        dictOwnerRemove.remove k
+    End If
+    ' all been checked so ready to output
+    With oWSOutput
+        lRow = FIND_LAST_ROW(oWSOutput) + 1
+        .Range("A" & lRow).Resize(UBound(tmpArr, 1), UBound(tmpArr, 2)) = tmpArr
+    End With
+Next k
+
+' step 2
+For Each k In dictOwnerReplace
+    roleMain = k
+    records = Split(dictOwnerReplace(k), delimRecord)
+    ' get current structure of main role
+    tmpArr = FIND_RECORD(roleMain)
+    ' add new records
+    tmpArr = REPLACE_OWNER(tmpArr, records)
+    ' check if this role exists in role updates
+    If dictRoleAdd.Exists(k) Then
+        records = Split(dictRoleAdd(k), delimRecord)
+        tmpArr = ADD_ROLES(tmpArr, records)
+        dictRoleAdd.remove k
+    End If
+    ' check if this role exists in owner updates
+    If dictOwnerAdd.Exists(k) Then
+        records = Split(dictOwnerAdd(k), delimRecord)
+        tmpArr = ADD_OWNER(tmpArr, records)
+        dictOwnerAdd.remove k
+    End If
+    ' check if this role exists in remove roles
+    If dictRoleRemove.Exists(k) Then
+        records = Split(dictRoleRemove(k), delimRecord)
+        tmpArr = REMOVE_ROLE(tmpArr, records)
+        dictRoleRemove.remove k
+    End If
+    ' check if this role exists in remove owners
+    If dictOwnerRemove.Exists(k) Then
+        records = Split(dictOwnerRemove(k), delimRecord)
+        tmpArr = REMOVE_OWNER(tmpArr, records)
+        dictOwnerRemove.remove k
+    End If
+    ' all been checked so ready to output
+    With oWSOutput
+        lRow = FIND_LAST_ROW(oWSOutput) + 1
+        .Range("A" & lRow).Resize(UBound(tmpArr, 1), UBound(tmpArr, 2)) = tmpArr
+    End With
+Next k
+
+'step 3
+For Each k In dictRoleAdd
+    roleMain = k
+    records = Split(dictRoleAdd(k), delimRecord)
+    ' get current structure of main role
+    tmpArr = FIND_RECORD(roleMain)
+    ' add new records
+    tmpArr = ADD_ROLES(tmpArr, records)
+    ' check if this role exists in owner updates
+    If dictOwnerAdd.Exists(k) Then
+        records = Split(dictOwnerAdd(k), delimRecord)
+        tmpArr = ADD_OWNER(tmpArr, records)
+        dictOwnerAdd.remove k
+    End If
+    ' check if this role exists in remove roles
+    If dictRoleRemove.Exists(k) Then
+        records = Split(dictRoleRemove(k), delimRecord)
+        tmpArr = REMOVE_ROLE(tmpArr, records)
+        dictRoleRemove.remove k
+    End If
+    ' check if this role exists in remove owners
+    If dictOwnerRemove.Exists(k) Then
+        records = Split(dictOwnerRemove(k), delimRecord)
+        tmpArr = REMOVE_OWNER(tmpArr, records)
+        dictOwnerRemove.remove k
+    End If
+    ' all been checked so ready to output
+    With oWSOutput
+        lRow = FIND_LAST_ROW(oWSOutput) + 1
+        .Range("A" & lRow).Resize(UBound(tmpArr, 1), UBound(tmpArr, 2)) = tmpArr
+    End With
+Next k
+
+'step 4
+For Each k In dictOwnerAdd
+    roleMain = k
+    records = Split(dictOwnerAdd(k), delimRecord)
+    ' get current structure of main role
+    tmpArr = FIND_RECORD(roleMain)
+    ' add new records
+    tmpArr = ADD_OWNER(tmpArr, records)
+    dictOwnerAdd.remove k
+    ' check if this role exists in remove roles
+    If dictRoleRemove.Exists(k) Then
+        records = Split(dictRoleRemove(k), delimRecord)
+        tmpArr = REMOVE_ROLE(tmpArr, records)
+        dictRoleRemove.remove k
+    End If
+    ' check if this role exists in remove owners
+    If dictOwnerRemove.Exists(k) Then
+        records = Split(dictOwnerRemove(k), delimRecord)
+        tmpArr = REMOVE_OWNER(tmpArr, records)
+        dictOwnerRemove.remove k
+    End If
+    
+    ' all been checked so ready to output
+    With oWSOutput
+        lRow = FIND_LAST_ROW(oWSOutput) + 1
+        .Range("A" & lRow).Resize(UBound(tmpArr, 1), UBound(tmpArr, 2)) = tmpArr
+    End With
+Next k
+
+' step 5
+For Each k In dictRoleRemove
+    roleMain = k
+    records = Split(dictRoleRemove(k), delimRecord)
+    ' get current structure of main role
+    tmpArr = FIND_RECORD(roleMain)
+    ' add new records
+    tmpArr = REMOVE_ROLE(tmpArr, records)
+    ' check if this role exists in remove owners
+    If dictOwnerRemove.Exists(k) Then
+        records = Split(dictOwnerRemove(k), delimRecord)
+        tmpArr = REMOVE_OWNER(tmpArr, records)
+        dictOwnerRemove.remove k
+    End If
+    
+    ' all been checked so ready to output
+    With oWSOutput
+        lRow = FIND_LAST_ROW(oWSOutput) + 1
+        .Range("A" & lRow).Resize(UBound(tmpArr, 1), UBound(tmpArr, 2)) = tmpArr
+    End With
+Next k
+
+' step 6
+For Each k In dictOwnerRemove
+    roleMain = k
+    records = Split(dictOwnerRemove(k), delimRecord)
+    ' get current structure of main role
+    tmpArr = FIND_RECORD(roleMain)
+    ' add new records
+    tmpArr = REMOVE_OWNER(tmpArr, records)
+    
+    ' all been checked so ready to output
+    With oWSOutput
+        lRow = FIND_LAST_ROW(oWSOutput) + 1
+        .Range("A" & lRow).Resize(UBound(tmpArr, 1), UBound(tmpArr, 2)) = tmpArr
+    End With
+Next k
+    
+
+End Sub
+
+
+Function GET_UPDATES(oWS As Excel.Worksheet, lRow As Long) As Collection
+
+
+' collections/dictionaries
+Dim coll As New Collection
+Dim dictAdd As New Scripting.Dictionary
+Dim dictRemove As New Scripting.Dictionary
+Dim dictReplace As New Scripting.Dictionary
+' integers
+Dim colOperation As Integer
+Dim colOperationAltern As Integer
+' strings
+Dim operation As String
+Dim operationAltern As String
+Dim roleMain As String
+Dim sourceSystem As String
+Dim targetSystem As String
+Dim roleName As String
+Dim record As String
+Dim approver As String
+Dim alternApprover As String
+' temporary arrays
+Dim tmpArr As Variant
+' counting parameters
+Dim i As Long
+Dim j As Long
+
+
+
+With oWS
+    ' check which type of update is required
+    Select Case oWS.Name
+        Case wsMapUpdates
+            ' add/remove column
+            colOperation = 5
+            tmpArr = Range(.Cells(2, 1), .Cells(lRow, colOperation))
+            ' loop throuugh all recorods
+            For i = LBound(tmpArr, 1) To UBound(tmpArr, 1)
+                ' populate params into new record
+                roleMain = Trim(tmpArr(i, 1))
+                sourceSystem = Trim(tmpArr(i, 2))
+                targetSystem = Trim(tmpArr(i, 3))
+                roleName = Trim(tmpArr(i, 4))
+                record = roleMain + delimParam + sourceSystem + delimParam + targetSystem + delimParam + roleName
+                ' check operation
+                operation = Trim(LCase(tmpArr(i, colOperation)))
+                ' add to individual list
+                If operation = add Then
+                    ' check if roleName already exists
+                    ' only add if it isn't already there
+                    If CHECK_DUPLICATE(roleMain, colRoleName, roleName) <> True Then
+                        If Not dictAdd.Exists(roleMain) Then
+                            dictAdd.add roleMain, record
+                        Else
+                            dictAdd(roleMain) = dictAdd(roleMain) + delimRecord + record
+                        End If
+                    End If
+                ElseIf operation = remove Then
+                    If Not dictRemove.Exists(roleMain) Then
+                        dictRemove.add roleMain, record
+                    Else
+                        dictRemove(roleMain) = dictRemove(roleMain) + delimRecord + record
+                    End If
+                ElseIf operation = replace Then
+                    If Not dictReplace.Exists(roleMain) Then
+                        dictReplace.add roleMain, record
+                    Else
+                        dictReplace(roleMain) = dictReplace(roleMain) + delimRecord + record
+                    End If
+                End If
+            Next i
+        
+        Case wsOwnerUpdates
+            ' add/remove column
+            colOperation = 3
+            colOperationAltern = 5
+            tmpArr = Range(.Cells(2, 1), .Cells(lRow, colOperationAltern))
+            ' loop throuugh all recorods
+            For i = LBound(tmpArr, 1) To UBound(tmpArr, 1)
+                ' populate params into new record
+                roleMain = Trim(tmpArr(i, 1))
+                approver = Trim(tmpArr(i, 2))
+                alternApprover = Trim(tmpArr(i, 4))
+                record = roleMain + delimParam + approver + delimParam + alternApprover
+                ' check operation
+                operation = Trim(LCase(tmpArr(i, colOperation)))
+                operationAltern = Trim(LCase(tmpArr(i, colOperationAltern)))
+                ' add to individual list
+                If (operation = add Or operationAltern = add) Then
+                    ' check if roleName already exists
+                    ' only add if it isn't already there
+                    If CHECK_DUPLICATE(roleMain, colApprover, approver) <> True Then
+                        If Not dictAdd.Exists(roleMain) Then
+                            dictAdd.add roleMain, record
+                        Else
+                            dictAdd(roleMain) = dictAdd(roleMain) + delimRecord + record
+                        End If
+                    End If
+                ElseIf (operation = remove Or operationAltern = remove) Then
+                    If Not dictRemove.Exists(roleMain) Then
+                        dictRemove.add roleMain, record
+                    Else
+                        dictRemove(roleMain) = dictRemove(roleMain) + delimRecord + record
+                    End If
+                ElseIf (operation = replace Or operationAltern = replace) Then
+                    If Not dictReplace.Exists(roleMain) Then
+                        dictReplace.add roleMain, record
+                    Else
+                        dictReplace(roleMain) = dictReplace(roleMain) + delimRecord + record
+                    End If
+                End If
+            Next i
+    End Select
+End With
+
+' add dictionaries to collection
+coll.add dictAdd
+coll.add dictRemove
+coll.add dictReplace
+
+' tidy up
+Set tmpArr = Nothing
+
+Set GET_UPDATES = coll
+
+End Function
+
+
+Function FIND_RECORD(roleMain As String) As Variant
+
+' workbook parameters
+Dim oWS As Excel.Worksheet
+' variant arrays
+Dim searchArr As Variant
+' booleans
+Dim found As Boolean
+' integers
+Dim lRow As Long
+Dim nextRec As Integer
+' looping parameters
+Dim i As Long
+
+
+' set worksheet
+Set oWS = ThisWorkbook.sheets(wsMaster)
+
+' find last occupied row and loop through records to find which need updating
+lRow = oWS.Cells(Rows.count, "A").End(-4162).Row
+searchArr = oWS.Range(oWS.Cells(2, 1), oWS.Cells(lRow, 1))
+
+' find record positions
+For i = LBound(searchArr, 1) To UBound(searchArr, 1)
+    If searchArr(i, 1) = roleMain Then
+        ' main role found so find next non-empty record
+        nextRec = i + 1
+        If nextRec <= UBound(searchArr, 1) Then
+            Do While searchArr(nextRec, 1) = Empty
+                nextRec = nextRec + 1
+            Loop
+        End If
+        found = True
+    Else
+        found = False
+    End If
+    If found = True Then Exit For
+Next i
+
+' return array of applicable data
+If found = True Then
+    FIND_RECORD = Range(oWS.Cells(i + 1, 1), oWS.Cells(nextRec, colLast))
+Else
+    ' it's a brand new record so create blank temporary array
+    Dim tmpArr(1 To 1, 1 To 38) As Variant
+    FIND_RECORD = tmpArr
+End If
+
+End Function
+
+
+Function FIND_NUM_RECORDS(arr As Variant, col As Integer) As Integer
+
+' integers
+Dim arrSize As Integer
+' looping parameters
+Dim i As Integer
+
+
+' work out current size of array
+arrSize = UBound(arr, 1)
+
+FIND_NUM_RECORDS = arrSize
+' loop through records and keep looping until a non-empty cell is found
+For i = LBound(arr, 1) To UBound(arr, 1)
+    If Trim(arr(i, col)) = "" Then
+        FIND_NUM_RECORDS = i - 1
+        Exit For
+    End If
+Next i
+
+End Function
+
+
+Function FIND_NUM_NEW_RECORDS(records As Variant) As Integer
+
+
+' integers
+Dim numNewRecords As Integer
+
+
+FIND_NUM_NEW_RECORDS = UBound(records) + 1
+
+End Function
+
+
+Function ADD_ROLES(arr As Variant, records As Variant) As Variant
+
+' takes current array, creates new array with new size and sends it back
+' integers
+Dim numCurRecords As Integer
+Dim numNewRecords As Integer
+Dim curArrSize As Integer
+' boolean
+Dim newEntry As Boolean
+' temporary arrays
+Dim tmpArr As Variant
+Dim entries As Variant
+' looping parameters
+Dim i As Integer
+Dim j As Integer
+Dim count As Integer
+
+
+
+
+' find current number of records
+curArrSize = UBound(arr, 1)
+numCurRecords = FIND_NUM_RECORDS(arr, colRoleName)
+numNewRecords = FIND_NUM_NEW_RECORDS(records)
+
+' check if it is a brand new entry or not based on first cell
+If arr(1, 1) <> "" Then
+    newEntry = False
+Else
+    newEntry = True
+End If
+
+' find out if new array needs to be formed or can the existing one be used
+If numCurRecords + numNewRecords > curArrSize Then
+    ReDim tmpArr(1 To numCurRecords + numNewRecords, 1 To colLast) As Variant
+Else
+    ReDim tmpArr(1 To UBound(arr, 1), 1 To UBound(arr, 2)) As Variant
+End If
+
+' set counter for entries
+count = 0
+' populate new array
+For i = LBound(tmpArr, 1) To UBound(tmpArr, 1)
+    ' increment new entry if necessary
+    If i > numCurRecords And i <= numCurRecords + numNewRecords Then
+        ' split records
+        entries = Split(records(count), delimParam)
+        count = count + 1
+    End If
+    
+    For j = LBound(tmpArr, 2) To UBound(tmpArr, 2)
+        ' check if new row/col is after original array size
+        If i <= numCurRecords Then
+            tmpArr(i, j) = arr(i, j)
+        Else
+            ' insert new entries split by delimParam
+            Select Case j
+                Case colSearch
+                    If tmpArr(i, j) = "" And i = LBound(tmpArr, 1) Then
+                        tmpArr(i, j) = entries(0)
+                    End If
+                Case colSourceSystem
+                    tmpArr(i, j) = entries(1)
+                Case colTargetSystem
+                    tmpArr(i, j) = entries(2)
+                Case colRoleName
+                    tmpArr(i, j) = entries(3)
+                Case Else
+                    ' if the array being appended is less than current array size then just copy cells
+                    If i <= curArrSize Then
+                        tmpArr(i, j) = arr(i, j)
+                    End If
+            End Select
+        End If
+    Next j
+    ' clear entries to ensure duplication doesn't occur
+    entries = CLEAR_ENTRIES(entries)
+Next i
+
+ADD_ROLES = tmpArr
+
+End Function
+
+
+Function ADD_OWNER(arr As Variant, records As Variant) As Variant
+
+' takes current array, creates new array with new size and sends it back
+' integers
+Dim numCurRecords As Integer
+Dim numNewRecords As Integer
+Dim curArrSize As Integer
+' temporary arrays
+Dim tmpArr As Variant
+Dim entries As Variant
+' looping parameters
+Dim i As Integer
+Dim j As Integer
+Dim count As Integer
+
+' find current number of records
+curArrSize = UBound(arr, 1)
+numCurRecords = FIND_NUM_RECORDS(arr, colApprover)
+numNewRecords = FIND_NUM_NEW_RECORDS(records)
+
+' find out if new array needs to be formed or can the existing one be used
+If numCurRecords + numNewRecords > curArrSize Then
+    ReDim tmpArr(1 To numCurRecords + numNewRecords, 1 To colLast) As Variant
+Else
+    ReDim tmpArr(1 To UBound(arr, 1), 1 To UBound(arr, 2)) As Variant
+End If
+
+' set counter for entries
+count = 0
+' populate new array
+For i = LBound(tmpArr, 1) To UBound(tmpArr, 1)
+    ' increment new entry if necessary
+    If i > numCurRecords And i <= numCurRecords + numNewRecords Then
+        ' split records
+        entries = Split(records(count), delimParam)
+        count = count + 1
+    End If
+    
+    For j = LBound(tmpArr, 2) To UBound(tmpArr, 2)
+        ' check if new row/col is after original array size
+        If i <= numCurRecords Or i > numCurRecords + numNewRecords Then
+            tmpArr(i, j) = arr(i, j)
+        Else
+            ' insert new entries split by delimParam
+            Select Case j
+                Case colSearch
+                    If tmpArr(i, j) = "" And i = LBound(tmpArr, 1) Then
+                        tmpArr(i, j) = entries(0)
+                        entries(0) = ""
+                    End If
+                Case colApprover
+                    tmpArr(i, j) = entries(1)
+                Case colAlternApprover
+                    tmpArr(i, j) = entries(2)
+                Case colAssignApprover
+                    If entries(1) <> "" Then tmpArr(i, j) = "Y"
+                Case colContentApprover
+                    If entries(1) <> "" Then tmpArr(i, j) = "Y"
+                Case Else
+                    ' if the array being appended is less than current array size then just copy cells
+                    If i <= curArrSize Then
+                        tmpArr(i, j) = arr(i, j)
+                    End If
+            End Select
+        End If
+    Next j
+    ' clear entries to ensure duplication doesn't occur
+    entries = CLEAR_ENTRIES(entries)
+Next i
+
+ADD_OWNER = tmpArr
+
+End Function
+
+
+Function REMOVE_ROLE(arr As Variant, records As Variant, Optional all As Boolean = False) As Variant
+
+Dim numCurRecords As Integer
+Dim numNewRecords As Integer
+Dim curArrSize As Integer
+' temporary arrays
+Dim tmpArr As Variant
+Dim entries As Variant
+' looping parameters
+Dim i As Integer
+Dim j As Integer
+Dim count As Integer
+
+
+' find current number of records
+curArrSize = UBound(arr, 1)
+numCurRecords = FIND_NUM_RECORDS(arr, colRoleName)
+numNewRecords = FIND_NUM_NEW_RECORDS(records)
+
+
+' loop through records to be removed
+If all = True Then
+    For i = LBound(arr, 1) To UBound(arr, 1)
+        arr(i, colSourceSystem) = ""
+        arr(i, colTargetSystem) = ""
+        arr(i, colRoleName) = ""
+    Next i
+Else
+    j = 0
+    For count = LBound(records) To UBound(records)
+        entries = Split(records(count), delimParam)
+        For i = LBound(arr, 1) To UBound(arr, 1)
+            If arr(i, colSourceSystem) = entries(1) And _
+                arr(i, colTargetSystem) = entries(2) And _
+                arr(i, colRoleName) = entries(3) Then
+                ' remove entries by offsetting them
+                j = j + 1
+            End If
+            If i + j > UBound(arr, 1) Then
+                arr(i, colSourceSystem) = ""
+                arr(i, colTargetSystem) = ""
+                arr(i, colRoleName) = ""
+            Else
+                arr(i, colSourceSystem) = arr(i + j, colSourceSystem)
+                arr(i, colTargetSystem) = arr(i + j, colTargetSystem)
+                arr(i, colRoleName) = arr(i + j, colRoleName)
+            End If
+        Next i
+    Next count
+End If
+
+' see if the temporary array can be reduced if there are no entries at the bottom
+REMOVE_ROLE = arr
+
+End Function
+
+
+Function REMOVE_OWNER(arr As Variant, records As Variant, Optional all As Boolean = False) As Variant
+
+Dim numCurRecords As Integer
+Dim numNewRecords As Integer
+Dim curArrSize As Integer
+' temporary arrays
+Dim tmpArr As Variant
+Dim entries As Variant
+' looping parameters
+Dim i As Integer
+Dim j As Integer
+Dim count As Integer
+
+
+' find current number of records
+curArrSize = UBound(arr, 1)
+numCurRecords = FIND_NUM_RECORDS(arr, colRoleName)
+numNewRecords = FIND_NUM_NEW_RECORDS(records)
+
+
+' loop through records to be removed
+' first check if all is set to True
+If all = True Then
+    For i = LBound(arr, 1) To UBound(arr, 1)
+        arr(i, colApprover) = ""
+        arr(i, colAlternApprover) = ""
+        arr(i, colAssignApprover) = ""
+        arr(i, colContentApprover) = ""
+    Next i
+Else
+    ' not set to True to continue as normal
+    j = 0
+    For count = LBound(records) To UBound(records)
+        entries = Split(records(count), delimParam)
+        For i = LBound(arr, 1) To UBound(arr, 1)
+            If arr(i, colApprover) = entries(1) And arr(i, colAlternApprover) = entries(2) Then
+                ' remove entries by offsetting them
+                j = j + 1
+            End If
+            If i + j > UBound(arr, 1) Then
+                arr(i, colApprover) = ""
+                arr(i, colAlternApprover) = ""
+                arr(i, colAssignApprover) = ""
+                arr(i, colContentApprover) = ""
+            Else
+                arr(i, colApprover) = arr(i + j, colApprover)
+                arr(i, colAlternApprover) = arr(i + j, colAlternApprover)
+                arr(i, colAssignApprover) = arr(i + j, colAssignApprover)
+                arr(i, colContentApprover) = arr(i + j, colContentApprover)
+            End If
+        Next i
+    Next count
+End If
+
+' see if the temporary array can be reduced if there are no entries at the bottom
+REMOVE_OWNER = arr
+
+End Function
+
+
+Function REPLACE_ROLE(arr As Variant, records As Variant)
+
+' first remove all current roles
+arr = REMOVE_ROLE(arr, records, True)
+
+' then add the provided replacements
+arr = ADD_ROLES(arr, records)
+
+REPLACE_ROLE = arr
+
+End Function
+
+Function REPLACE_OWNER(arr As Variant, records As Variant)
+
+' first remove all current owners
+arr = REMOVE_OWNER(arr, records, True)
+
+' then add the provided replacements
+arr = ADD_OWNER(arr, records)
+
+REPLACE_OWNER = arr
+
+End Function
+
+
+Function CHECK_DUPLICATE(roleMain As String, colToCheck As Integer, valueToCheck As String) As Boolean
+
+' variant arrays
+Dim tmpArr As Variant
+' looping parameters
+Dim i As Integer
+
+' get current records to check for duplicates
+tmpArr = FIND_RECORD(roleMain)
+
+CHECK_DUPLICATE = False
+' loop through column to find if value already exists
+For i = LBound(tmpArr, 1) To UBound(tmpArr, 1)
+    If tmpArr(i, colToCheck) = valueToCheck Then
+        ' there is a duplicate so don't add it in
+        ' exit for loop
+        CHECK_DUPLICATE = True
+        Exit For
+    End If
+Next i
+
+End Function
+
+
+
+Function CLEAR_ENTRIES(entries As Variant) As Variant
+
+' looping parameters
+Dim i As Integer
+Dim test As Integer
+
+
+' clear all entry data to prevent the re-writing of entry data
+' error trap here
+' if there is an error, entries will be returned as empty
+On Error Resume Next
+    For i = LBound(entries) To UBound(entries)
+        entries(i) = ""
+    Next i
+On Error GoTo 0
+
+CLEAR_ENTRIES = entries
+
+End Function
+
+
+
+Function FIND_LAST_ROW(oWS As Excel.Worksheet) As Long
+
+' counting parameters
+Dim i As Long
+Dim lRow As Long
+Dim lend As Long
+
+
+' find the last occupied row across columns 1 to colLast
+' only report the highest value
+With oWS
+    For i = 1 To colLast
+        lRow = .Cells(Rows.count, i).End(-4162).Row
+        If lRow > lend Then lend = lRow
+    Next i
+End With
+
+FIND_LAST_ROW = lend
+
+End Function
+
+' =====================================================================
+' misc subroutines
+
+Sub CLEAR_OUTPUT()
+
+' worksheet parameters
+Dim oWS As Excel.Worksheet
+' numbers
+Dim lRow As Long
+
+
+
+Set oWS = ThisWorkbook.sheets(wsOutput)
+
+' find last occupied row
+lRow = FIND_LAST_ROW(oWS)
+
+' only remove contents if last row is greater than 1
+If lRow > 1 Then
+    Range(oWS.Cells(2, 1), oWS.Cells(lRow, colLast)).ClearContents
+End If
+
+End Sub
+
+
+Sub CLEAR_NEW_INSERTS()
+
+' worksheet parameters
+Dim oWS As Excel.Worksheet
+' strings
+Dim sheets As Variant
+Dim sheet As Variant
+' numbers
+Dim lRow As Long
+
+
+sheets = Array(wsMapUpdates, wsOwnerUpdates)
+
+For Each sheet In sheets
+    Set oWS = ThisWorkbook.sheets(sheet)
+    
+    ' find last occupied row
+    lRow = FIND_LAST_ROW(oWS)
+    
+    ' only remove contents if last row is greater than 1
+    If lRow > 1 Then
+        Range(oWS.Cells(2, 1), oWS.Cells(lRow, colLast)).ClearContents
+    End If
+Next sheet
+
+End Sub
